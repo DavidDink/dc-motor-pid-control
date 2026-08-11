@@ -1,7 +1,7 @@
 # dc-motor-pid-control
 Closed-loop PID velocity and position control of a DC gearmotor with quadrature encoder feedback, implemented in C++ on Arduino
 
-**Overview:**
+## Overview:
 This project implements a full PID control loop for a DC gearmotor, using quadrature encoder feedback to achieve precise velocity and position control. The controller is written from scratch in C++ to demonstrate direct 
 understanding of proportional, integral, and derivative control behavior. The goal is to characterize how each PID term affects system response, tune gains systematically, and validate performance against defined specifications using 
 real-time serial data logging and Python-based analysis.
