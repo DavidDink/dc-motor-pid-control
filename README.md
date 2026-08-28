@@ -16,7 +16,7 @@ Power Supply:	     External 12V supply for motor, USB for Arduino
 ### Wiring overview
 Encoder A and B channels connected to Arduino interrupt pins (D2, D3)
 H-bridge IN1/IN2 for direction control, ENA for PWM speed control
-Serial output at 115200 baud for real-time data logging
+Serial output at 9600 baud for real-time data logging
 
 ### Target Specification
 Position control accuracy:	±2 degrees steady-state error
