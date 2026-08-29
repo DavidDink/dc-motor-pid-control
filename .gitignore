@@ -1,0 +1,13 @@
+# Generated test data - regenerated on every run
+pid_test_logs/test_*.csv
+pid_test_logs/all_runs_raw.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
