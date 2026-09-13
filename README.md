@@ -66,7 +66,7 @@ A test is passed if |current_angle - target| <= TOLERANCE_DEG (currently 3.0°) 
 it stays within that band for every sample afterward through the end of capture. In addition, we capture the following metrics for each test
 - Steady state error: the mean absolute error over the last STEADY_STATE_WINDOW_SEC (currently 1.0s) of the captured response
 - Asymptotic settling time: the time elapsed to reach TOLERANCE_DEG minus the time it would take to reach TOLERANCE_DEG if motor spun at max speed (130 rpm)
-- Overshoot rate: the % of tests that overshoot the target by > 2 degrees.
+- Overshoot rate: the % of tests that overshoot the target by > 2 degrees.  
 150 test cases were ran for the final test, the test matrix was defined by combinations of the following parameters
 - STEP_SIZES_DEG: [10,45,90,180,360] 5 different step sizes used
 - DIRECTIONS: [-1,1] Each step size conducted forwards and backwards
