@@ -125,26 +125,26 @@ void loop() {
     analogWrite(ENA,abs(output)); //set PWM value based on the output
   }
 
-  // print outputs to serial
-  if (now - lastPrintTime >= printInterval){ // delay the printing so it's easier to see
-    Serial.print(commandID);
-    Serial.print(",");
-    Serial.print(now);
-    Serial.print(",");
+  // // print outputs to serial
+  // if (now - lastPrintTime >= printInterval){ // delay the printing so it's easier to see
+  //   Serial.print(commandID);
+  //   Serial.print(",");
+  //   Serial.print(now);
+  //   Serial.print(",");
+  //   Serial.print(currentAngle);
+  //   Serial.print(",");
+  //   Serial.println(targetAngle);
+  //   lastPrintTime = now;
+  // }
+
+
+// Alternate testing printing
+    if (now - lastPrintTime >= printInterval){ // delay the printing so it's easier to see
     Serial.print(currentAngle);
     Serial.print(",");
     Serial.println(targetAngle);
     lastPrintTime = now;
-  }
-
-
-// // Alternate testing printing
-//     if (now - lastPrintTime >= printInterval){ // delay the printing so it's easier to see
-//     Serial.print(currentAngle);
-//     Serial.print(",");
-//     Serial.println(targetAngle);
-//     lastPrintTime = now;
-//  }
+ }
 
 
 }
