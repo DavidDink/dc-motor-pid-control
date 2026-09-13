@@ -3,7 +3,7 @@ const unsigned long pidInterval = 10; // fixed PID update rate
 long commandID = 0; // a fixed ID per instruction, so that serial logging has a way to identify which action was instructed
 
 unsigned long lastPrintTime = 0;
-const unsigned long printInterval = 40; // milliseconds between prints
+const unsigned long printInterval = 100; // milliseconds between prints
 
 volatile long pulseCount = 0; // Positive pulse count means CCW rotation
 
@@ -17,16 +17,22 @@ const int ENCA = 2; // YELLOW encoder Signal A.
 const int ENCB = 3; // WHITE encoder Signal B. 
 const float countsPerRev = 1080; //2*540 based on observed counting on leading and falling edge
 
-// define target angle, user will input
-float targetAngle = 0;
-// define PID constants
+
+// ---------- MODEL PARAMETERS -----------------------
+// Friction corrections
+float tolerance = 3.0;
+float friction = 20; // added a fixed bias in the direction of travel. active outside the tolerance region
 float Kp = 2.0;
-float Ki = 0.16;
+float Ki = 0.3;
 float Kd = 0.4; 
+
+
+// initialize out of scope variables
 float integral = 0;
 float lastError = 0;
 float currentAngle = 0.001; // Angle set by typing in computer. Need to define out of scope
 float output = 0; // PID output. Need to define out of scope
+float targetAngle = 0;
 
 // countPulse function. This will trigger this fcn anytime A changes
 void countPulse(){
@@ -54,20 +60,33 @@ void setup() {
   lastPIDTime = millis(); // initialize t = 0
 }
 
-
 void loop() {
   // put your main code here, to run repeatedly:
-  if (Serial.available()){ // only get the number typed into the computer if something was typed, otherwise don't 
-    
-    float newTarget = Serial.parseFloat();
-    while(Serial.available()) Serial.read(); // force to read all characters typed in so that there isn't leftover
-  // reset integral and error when new target
-    if (newTarget != targetAngle) {
-      integral = 0;
-      lastError = 0;
+  if (Serial.available()){ // only get the number typed into the computer if something was typed, otherwise don't
+
+    if (Serial.peek() == 'P') { // 'P' query: report current constants instead of a new target
+      Serial.readStringUntil('\n'); // wait for the full "P\n" so a split read can't leave the trailing '\n' to be misread as a target command
+      Serial.print("PARAMS,");
+      Serial.print(Kp);
+      Serial.print(",");
+      Serial.print(Ki);
+      Serial.print(",");
+      Serial.print(Kd);
+      Serial.print(",");
+      Serial.print(friction);
+      Serial.print(",");
+      Serial.println(tolerance);
+    } else {
+      float newTarget = Serial.parseFloat();
+      while(Serial.available()) Serial.read(); // force to read all characters typed in so that there isn't leftover
+      // reset integral and error when new target
+      if (newTarget != targetAngle) {
+        integral = 0;
+        lastError = 0;
+      }
+      targetAngle = newTarget;
+      commandID++;
     }
-    targetAngle = newTarget;
-    commandID++;
   }
 
   unsigned long now = millis();
@@ -87,7 +106,9 @@ void loop() {
 
     float derivative = (error - lastError) / dt; // adjust derivative term
     output = Kp * error + Ki * integral + Kd * derivative;
-
+    if (fabs(error) > tolerance){ // Static friction compensation term
+      output += (output > 0 ? friction : - friction);
+    }
     output = constrain(output,-255,255); // make sure output lands in between -255, and 255
 
     // determine the direction of rotation
@@ -115,4 +136,15 @@ void loop() {
     Serial.println(targetAngle);
     lastPrintTime = now;
   }
+
+
+// // Alternate testing printing
+//     if (now - lastPrintTime >= printInterval){ // delay the printing so it's easier to see
+//     Serial.print(currentAngle);
+//     Serial.print(",");
+//     Serial.println(targetAngle);
+//     lastPrintTime = now;
+//  }
+
+
 }

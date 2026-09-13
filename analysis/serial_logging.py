@@ -24,7 +24,7 @@ BOOT_DELAY_SEC = 2.0  # opening the port resets the Arduino; let it finish booti
 ## REPEATS = 3
 STEP_SIZES_DEG = [10,45,90,180,360]
 DIRECTIONS = [1,-1]
-STARTING_CONDITIONS = ["rest","in_motion_same","in_motion_reversal"]
+STARTING_CONDITIONS = ["rest"]
 REPEATS = 3
 
 INTERRUPT_DELAY_SEC = 0.3  # time to let the motor get moving before interrupting it mid-move
@@ -76,6 +76,30 @@ def send_target(ser: serial.Serial, command_id: int, target_angle: float) -> int
     command_id += 1
     ser.write(f"{target_angle}\n".encode())
     return command_id
+
+
+def query_firmware_params(ser: serial.Serial, timeout_sec: float = 2.0) -> dict:
+    """Ask the Arduino for its live Kp/Ki/Kd/friction/tolerance via the 'P' query command.
+
+    Telemetry lines keep streaming during the query, so we read until we see the
+    "PARAMS," line rather than assuming the next line is the response.
+    """
+    ser.reset_input_buffer()
+    ser.write(b"P\n")
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        line = ser.readline().decode(errors="ignore").strip()
+        if not line.startswith("PARAMS,"):
+            continue
+        _, kp, ki, kd, friction, tolerance = line.split(",")
+        return {
+            "kp": float(kp),
+            "ki": float(ki),
+            "kd": float(kd),
+            "friction": float(friction),
+            "tolerance": float(tolerance),
+        }
+    raise TimeoutError("Arduino did not respond to params query")
 
 
 def capture_response(
@@ -215,8 +239,28 @@ def print_test_result(metrics: dict) -> None:
     )
 
 
+def make_run_dir() -> Path:
+    run_dir = OUTPUT_DIR / time.strftime("run_%Y%m%d_%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def write_params_file(run_dir: Path, firmware_params: dict) -> None:
+    lines = [
+        f"tolerance_deg: {firmware_params['tolerance']}",
+        f"friction: {firmware_params['friction']}",
+        f"kp: {firmware_params['kp']}",
+        f"ki: {firmware_params['ki']}",
+        f"kd: {firmware_params['kd']}",
+    ]
+    (run_dir / "params.txt").write_text("\n".join(lines) + "\n")
+
+
 def run_all_tests(ser: serial.Serial) -> tuple[pd.DataFrame, pd.DataFrame]:
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    run_dir = make_run_dir()
+    firmware_params = query_firmware_params(ser)
+    write_params_file(run_dir, firmware_params)
+
     test_matrix = build_test_matrix()
     print(f"Total tests to run: {len(test_matrix)}")
 
@@ -240,7 +284,7 @@ def run_all_tests(ser: serial.Serial) -> tuple[pd.DataFrame, pd.DataFrame]:
             f"test_{i:03d}_size{test.step_size}_dir{test.direction}"
             f"_{test.start_condition}_rep{test.rep}.csv"
         )
-        df.to_csv(OUTPUT_DIR / filename, index=False)
+        df.to_csv(run_dir / filename, index=False)
         all_runs.append(df)
 
         metrics = compute_metrics(df, start_angle)
@@ -258,17 +302,17 @@ def run_all_tests(ser: serial.Serial) -> tuple[pd.DataFrame, pd.DataFrame]:
         print_test_result(metrics)
 
     raw_df = pd.concat(all_runs, ignore_index=True)
-    raw_df.to_csv(OUTPUT_DIR / "all_runs_raw.csv", index=False)
+    raw_df.to_csv(run_dir / "all_runs_raw.csv", index=False)
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df.to_csv(OUTPUT_DIR / "summary.csv", index=False)
+    summary_df.to_csv(run_dir / "summary.csv", index=False)
 
     print("All tests complete.")
     print_summary_statistics(summary_df)
     print_step_size_breakdown(summary_df, step_size=45)
-    plot_steady_state_error_by_step_size(summary_df)
-    plot_settling_time_by_step_size(summary_df)
-    plot_overshoot_pct_by_step_size(summary_df)
+    plot_steady_state_error_by_step_size(summary_df, run_dir)
+    plot_settling_time_by_step_size(summary_df, run_dir)
+    plot_overshoot_pct_by_step_size(summary_df, run_dir)
     return raw_df, summary_df
 
 
@@ -289,7 +333,9 @@ def print_summary_statistics(summary_df: pd.DataFrame) -> None:
     print(f"Overshoot rate:                      {pct_overshoot:.1f}%")
 
 
-def _bar_chart_by_step_size(values_by_step: pd.Series, ylabel: str, title: str, filename: str, color: str) -> None:
+def _bar_chart_by_step_size(
+    values_by_step: pd.Series, ylabel: str, title: str, filename: str, color: str, output_dir: Path
+) -> None:
     x = values_by_step.index.astype(str)
 
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -299,11 +345,11 @@ def _bar_chart_by_step_size(values_by_step: pd.Series, ylabel: str, title: str, 
     ax.set_title(title)
 
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / filename, dpi=150)
+    fig.savefig(output_dir / filename, dpi=150)
     plt.show()
 
 
-def plot_steady_state_error_by_step_size(summary_df: pd.DataFrame) -> None:
+def plot_steady_state_error_by_step_size(summary_df: pd.DataFrame, output_dir: Path) -> None:
     mean_error_by_step = summary_df.groupby("step_size")["steady_state_error_deg"].mean().sort_index()
     _bar_chart_by_step_size(
         mean_error_by_step,
@@ -311,10 +357,11 @@ def plot_steady_state_error_by_step_size(summary_df: pd.DataFrame) -> None:
         title="Mean Steady-State Error by Step Size",
         filename="steady_state_error_by_step_size.png",
         color="tab:blue",
+        output_dir=output_dir,
     )
 
 
-def plot_settling_time_by_step_size(summary_df: pd.DataFrame) -> None:
+def plot_settling_time_by_step_size(summary_df: pd.DataFrame, output_dir: Path) -> None:
     mean_settling_time_by_step = summary_df.groupby("step_size")["settling_time_sec"].mean().sort_index()
     _bar_chart_by_step_size(
         mean_settling_time_by_step,
@@ -322,10 +369,11 @@ def plot_settling_time_by_step_size(summary_df: pd.DataFrame) -> None:
         title="Mean Settling Time by Step Size",
         filename="settling_time_by_step_size.png",
         color="tab:orange",
+        output_dir=output_dir,
     )
 
 
-def plot_overshoot_pct_by_step_size(summary_df: pd.DataFrame) -> None:
+def plot_overshoot_pct_by_step_size(summary_df: pd.DataFrame, output_dir: Path) -> None:
     overshoot_pct_by_step = 100 * summary_df.groupby("step_size")["overshoot"].mean().sort_index()
     _bar_chart_by_step_size(
         overshoot_pct_by_step,
@@ -333,6 +381,7 @@ def plot_overshoot_pct_by_step_size(summary_df: pd.DataFrame) -> None:
         title="Percent Overshoot by Step Size",
         filename="overshoot_pct_by_step_size.png",
         color="tab:green",
+        output_dir=output_dir,
     )
 
 
