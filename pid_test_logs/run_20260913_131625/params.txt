@@ -1,0 +1,5 @@
+tolerance_deg: 2.8
+friction: 30.0
+kp: 2.0
+ki: 0.3
+kd: 0.4
