@@ -8,14 +8,41 @@ understanding of proportional, integral, and derivative control behavior. The go
 ### Hardware
 - Microcontroller:   Arduino Uno
 - Motor Driver:      H-Bridge (L298N)
-- Motor:	           DC Gearmotor with quadrature encoder
-- Encoder:	         Quadrature (A/B channels), interrupt-driven
+- Motor:	           DC Gearmotor with quadrature encoder. Model: JGA25-371. 130 rpm. 
+- Encoder:	         Quadrature (A/B channels), interrupt-driven. 1080 ticks per revolution (counts leading and falling edge)
 - Power Supply:	     External 12V supply for motor, USB for Arduino
 
 ### Wiring overview
-Encoder A and B channels connected to Arduino interrupt pins (D2, D3)
-H-bridge IN1/IN2 for direction control, ENA for PWM speed control
-Serial output at 9600 baud for real-time data logging
+**Arduino**: 
+- USB-B to computer for serial. Port configured in serial_logging.py as SERIAL_PORT. Baud rate 9600
+- 5v Power to Encoder (Blue wire)
+- Ground to shared ground bus
+- pin 2 to quad encoder A signal (interupt capable) (yellow wire)
+- pin 3 to quad encoder B signal (interupt capable) (white wire)
+- pin 7 to h-bridge IN2
+- pin 8 to h-bridge IN1
+- pin 9 to h-bridge ENA (interupt capable)
+  
+**Encoder**:
+- Red - Motor power terminal (+) to h-bridge out 1
+- Black - Motor power terminal(-) to h-bridge out 2
+- Green - Quad encoder Ground to shared ground bus
+- Blue - Quad encoder +5V Vcc to 5v power on arduino
+- Yellow - Quad encoder A signal to arduino pin 2
+- White - Quad encoder B signal to arduino pin 3
+
+**H-bridge**:
+- Out 1 to motor power terminal (+) (red wire)
+- Out 2 to motor power terminal (-) (black wire)
+- GND to shared ground bus
+- +12V to 12V power supply
+- ENA to arduino pin 9
+- IN1 to arduino pin 8
+- IN2 to arduino pin 7
+
+**12V Power Supply**:
+- Positive to +12V on h-bridge
+- Negative to shared ground bus
 
 ### File Structure
 - **arduino:** contains motor_pid.ino. This is the c++ code that gets uploaded to the arduino via usb. Individual test cases can be run from this file using the arduino IDE and viewing the output in a serial plotter by uncommenting "Alternate testing printing" and commenting out "print outputs to serial". 
