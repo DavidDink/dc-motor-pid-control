@@ -20,8 +20,8 @@ const float countsPerRev = 1080; //2*540 based on observed counting on leading a
 
 // ---------- MODEL PARAMETERS -----------------------
 // Friction corrections
-float tolerance = 3.0;
-float friction = 20; // added a fixed bias in the direction of travel. active outside the tolerance region
+float tolerance = 2.8;
+float friction = 30; // added a fixed bias in the direction of travel. active outside the tolerance region
 float Kp = 2.0;
 float Ki = 0.3;
 float Kd = 0.4; 

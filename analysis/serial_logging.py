@@ -18,19 +18,22 @@ SERIAL_READ_TIMEOUT_SEC = 0.1
 BOOT_DELAY_SEC = 2.0  # opening the port resets the Arduino; let it finish booting before use
 
 # --- Test matrix ---
+# Commented-out block below is the original full-matrix defaults, kept here to restore easily
+# after trimming the active values down for a quicker/smaller test run.
 ## STEP_SIZES_DEG = [10, 45, 90, 180, 360]
 ## DIRECTIONS = [1, -1]
 ## STARTING_CONDITIONS = ["rest", "in_motion_same", "in_motion_reversal"]
 ## REPEATS = 3
 STEP_SIZES_DEG = [10,45,90,180,360]
 DIRECTIONS = [1,-1]
-STARTING_CONDITIONS = ["rest"]
-REPEATS = 3
+STARTING_CONDITIONS = ["rest","in_motion_same","in_motion_reversal"]
+REPEATS = 5
 
 INTERRUPT_DELAY_SEC = 0.3  # time to let the motor get moving before interrupting it mid-move
 
 # --- Settling / capture tuning ---
 TOLERANCE_DEG = 3.0
+OVERSHOOT_THRESHOLD_DEG = 2.0  # how far past target counts as overshoot, vs. just settling noise
 MIN_SETTLE_SAMPLES = 5
 CAPTURE_TIMEOUT_SEC = 10.0  # safety ceiling only; capture normally ends on genuine settle
 REST_SETTLE_TIMEOUT_SEC = 10.0
@@ -45,6 +48,8 @@ MAX_ANGULAR_SPEED_DEG_PER_SEC = MOTOR_MAX_RPM * 360 / 60
 
 @dataclass
 class StepTest:
+    """One entry in the test matrix: a single step-response test to run and log."""
+
     step_size: float
     direction: int
     start_condition: str
@@ -52,10 +57,14 @@ class StepTest:
 
     @property
     def target(self) -> float:
+        """Signed target angle in degrees (step_size scaled by direction)."""
         return self.step_size * self.direction
 
 
 def build_test_matrix() -> list[StepTest]:
+    """Build the full list of tests to run: every combination of step size, direction,
+    starting condition, and repeat count from the globals above (a full cross-product,
+    so changing any one list changes the total test count multiplicatively)."""
     return [
         StepTest(step_size=size, direction=direction, start_condition=start, rep=rep)
         for size in STEP_SIZES_DEG
@@ -66,6 +75,11 @@ def build_test_matrix() -> list[StepTest]:
 
 
 def connect(port: str = SERIAL_PORT, baud_rate: int = BAUD_RATE) -> serial.Serial:
+    """Open the serial connection to the Arduino and wait for it to finish rebooting.
+
+    Opening a USB-serial port resets the Arduino, so we sleep for BOOT_DELAY_SEC before
+    doing anything else, then clear out any boot-time garbage bytes it printed while resetting.
+    """
     ser = serial.Serial(port, baud_rate, timeout=SERIAL_READ_TIMEOUT_SEC)
     time.sleep(BOOT_DELAY_SEC)
     ser.reset_input_buffer()
@@ -73,6 +87,12 @@ def connect(port: str = SERIAL_PORT, baud_rate: int = BAUD_RATE) -> serial.Seria
 
 
 def send_target(ser: serial.Serial, command_id: int, target_angle: float) -> int:
+    """Send a new target angle to the Arduino and return the next command id.
+
+    command_id is threaded through explicitly (passed in, returned incremented) rather than
+    kept as a global, so callers can always tell exactly which command a given response
+    line belongs to.
+    """
     command_id += 1
     ser.write(f"{target_angle}\n".encode())
     return command_id
@@ -110,6 +130,17 @@ def capture_response(
     timeout_sec: float = CAPTURE_TIMEOUT_SEC,
     post_settle_window_sec: float = STEADY_STATE_WINDOW_SEC,
 ) -> tuple[pd.DataFrame, bool]:
+    """Read telemetry lines for one command and capture its step response.
+
+    Blocks, reading lines from the Arduino, until either:
+      - the response has genuinely settled (min_settle_samples consecutive samples within
+        tolerance_deg of target) and an extra post_settle_window_sec of data past that point
+        has been captured (so later steady-state calculations have real settled data to
+        average instead of reaching back into the transient), or
+      - timeout_sec elapses with no settle (the test is considered failed/still moving).
+
+    Returns the captured samples as a DataFrame plus whether it actually settled.
+    """
     rows = []
     consecutive_in_band = 0
     settled = False
@@ -119,16 +150,16 @@ def capture_response(
     while time.time() < deadline:
         line = ser.readline().decode(errors="ignore").strip()
         if not line:
-            continue
+            continue  # readline() timed out (SERIAL_READ_TIMEOUT_SEC) with nothing received
 
         parts = line.split(",")
         if len(parts) != 4:
-            continue
+            continue  # not a well-formed commandID,millis,currentAngle,targetAngle telemetry line
         try:
             line_command_id = int(float(parts[0]))
             t_ms, current_angle, target_angle = (float(p) for p in parts[1:])
         except ValueError:
-            continue
+            continue  # a line torn mid-write by the serial buffer; drop it rather than crash
 
         if line_command_id != expected_command_id:
             continue  # stale line from a previous command; association is by ID only, never by timing
@@ -147,11 +178,29 @@ def capture_response(
 
     df = pd.DataFrame(rows, columns=["t_ms", "current_angle", "target_angle"])
     if not df.empty:
-        df["t_sec"] = (df["t_ms"] - df["t_ms"].iloc[0]) / 1000.0
+        df["t_sec"] = (df["t_ms"] - df["t_ms"].iloc[0]) / 1000.0  # rebase to seconds since first sample
     return df, settled
 
 
 def compute_metrics(df: pd.DataFrame, start_angle: float, tolerance_deg: float = TOLERANCE_DEG) -> dict:
+    """Compute pass/fail and performance metrics for one captured step response.
+
+    Returns a dict with:
+      - dist_deg: distance travelled from start_angle to the final commanded target.
+      - settling_time_sec: time of the first sample after which error stays within
+        tolerance_deg for the rest of the capture (a later dip back out resets the search,
+        so this is "enters the band and never leaves again," not "first touches the band").
+        NaN if that never happens within the capture window.
+      - asymptotic_settling_time_sec: settling_time_sec with the time the motor "should"
+        spend just travelling dist_deg at its rated max speed subtracted off, isolating the
+        extra time spent converging into tolerance from unavoidable travel time. NaN if the
+        test didn't settle.
+      - steady_state_error_deg: mean absolute error over the last STEADY_STATE_WINDOW_SEC of
+        the capture (only meaningful as "steady state" if the test actually passed).
+      - overshoot: True if the response passed target by more than OVERSHOOT_THRESHOLD_DEG in
+        the direction of travel (small crossings within that threshold don't count).
+      - passed: True iff settling_time_sec is not NaN, i.e. the response genuinely settled.
+    """
     if df.empty:
         return {
             "dist_deg": np.nan,
@@ -169,6 +218,8 @@ def compute_metrics(df: pd.DataFrame, start_angle: float, tolerance_deg: float =
 
     settling_time_sec = np.nan
     for idx in range(len(within_band)):
+        # within_band[idx:].all() requires every remaining sample to also be in tolerance,
+        # so a brief in-band dip that's later left again is correctly rejected as a real settle
         if within_band[idx] and within_band[idx:].all():
             settling_time_sec = t[idx]
             break
@@ -186,11 +237,13 @@ def compute_metrics(df: pd.DataFrame, start_angle: float, tolerance_deg: float =
         settling_time_sec - expected_full_speed_time_sec if not np.isnan(settling_time_sec) else np.nan
     )
 
+    # only counts as overshoot past OVERSHOOT_THRESHOLD_DEG beyond target, so settling noise near
+    # the target isn't mistaken for a real overshoot
     movement_direction = np.sign(target - start_angle)
     if movement_direction > 0:
-        overshoot = bool(np.any(df["current_angle"].to_numpy() > target))
+        overshoot = bool(np.any(df["current_angle"].to_numpy() > target + OVERSHOOT_THRESHOLD_DEG))
     elif movement_direction < 0:
-        overshoot = bool(np.any(df["current_angle"].to_numpy() < target))
+        overshoot = bool(np.any(df["current_angle"].to_numpy() < target - OVERSHOOT_THRESHOLD_DEG))
     else:
         overshoot = False
 
@@ -205,6 +258,19 @@ def compute_metrics(df: pd.DataFrame, start_angle: float, tolerance_deg: float =
 
 
 def run_single_test(ser: serial.Serial, command_id: int, test: StepTest) -> tuple[pd.DataFrame, int, float]:
+    """Drive the motor into the test's starting condition, then command the real target
+    and capture the resulting step response.
+
+    "rest" first sends the motor back to 0 and waits for it to settle there, so every rest
+    test starts from a known, stationary baseline. "in_motion_same"/"in_motion_reversal"
+    instead send an intermediate setpoint and only wait INTERRUPT_DELAY_SEC (not a full
+    settle) before issuing the real target, so the motor is deliberately still moving when
+    the test command lands -- that's the point of those two start conditions.
+
+    Returns the captured response, the updated command_id, and the start_angle the response
+    actually began from (0 for "rest", the intermediate setpoint otherwise) for use in
+    compute_metrics' distance/direction calculations.
+    """
     if test.start_condition == "rest":
         command_id = send_target(ser, command_id, 0)
         _, settled = capture_response(ser, command_id, timeout_sec=REST_SETTLE_TIMEOUT_SEC)
@@ -212,6 +278,10 @@ def run_single_test(ser: serial.Serial, command_id: int, test: StepTest) -> tupl
             print(f"  WARNING: rest baseline never settled for {test}")
         start_angle = 0.0
     else:
+        # "in_motion_same": approach the target from halfway along the same direction, so the
+        # real command continues the motor's existing direction of travel.
+        # "in_motion_reversal": approach from halfway in the opposite direction, so the real
+        # command forces the motor to reverse mid-move instead of continuing straight through.
         sign = 1 if test.start_condition == "in_motion_same" else -1
         intermediate = sign * test.target / 2
         command_id = send_target(ser, command_id, intermediate)
@@ -229,6 +299,7 @@ def run_single_test(ser: serial.Serial, command_id: int, test: StepTest) -> tupl
 
 
 def print_test_result(metrics: dict) -> None:
+    """Print a one-line human-readable summary of a single test's compute_metrics() result."""
     pass_fail = "PASS" if metrics["passed"] else "FAIL"
     overshoot = "y" if metrics["overshoot"] else "n"
     print(
@@ -240,12 +311,17 @@ def print_test_result(metrics: dict) -> None:
 
 
 def make_run_dir() -> Path:
+    """Create (and return) a fresh timestamped directory under OUTPUT_DIR for this run's
+    output, so results from different runs land in separate folders instead of overwriting
+    each other's CSVs/plots."""
     run_dir = OUTPUT_DIR / time.strftime("run_%Y%m%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
 
 def write_params_file(run_dir: Path, firmware_params: dict) -> None:
+    """Write the firmware-reported tolerance/friction/Kp/Ki/Kd for this run to params.txt,
+    so each run folder records exactly which constants were flashed when it was collected."""
     lines = [
         f"tolerance_deg: {firmware_params['tolerance']}",
         f"friction: {firmware_params['friction']}",
@@ -257,6 +333,13 @@ def write_params_file(run_dir: Path, firmware_params: dict) -> None:
 
 
 def run_all_tests(ser: serial.Serial) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Top-level test driver: query the firmware's live constants, run every test in the
+    matrix in sequence, and save all of this run's output (per-test CSVs, the combined raw
+    and summary CSVs, params.txt, and the three summary plots) into one fresh run folder.
+
+    Returns the concatenated raw per-sample data and the per-test summary, in case the
+    caller wants to inspect them further (e.g. interactively).
+    """
     run_dir = make_run_dir()
     firmware_params = query_firmware_params(ser)
     write_params_file(run_dir, firmware_params)
@@ -317,6 +400,8 @@ def run_all_tests(ser: serial.Serial) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def print_summary_statistics(summary_df: pd.DataFrame) -> None:
+    """Print aggregate pass rate, mean asymptotic settling time, mean steady-state error,
+    and overshoot rate across every test in this run's summary_df."""
     n_total = len(summary_df)
     n_passed = int(summary_df["passed"].sum())
     pct_passed = 100 * n_passed / n_total if n_total else np.nan
@@ -336,6 +421,9 @@ def print_summary_statistics(summary_df: pd.DataFrame) -> None:
 def _bar_chart_by_step_size(
     values_by_step: pd.Series, ylabel: str, title: str, filename: str, color: str, output_dir: Path
 ) -> None:
+    """Shared helper: draw and save one bar chart of a metric already aggregated by step
+    size (index = step size, values = the metric), used by each plot_* function below so
+    they only need to supply the aggregation and labels."""
     x = values_by_step.index.astype(str)
 
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -350,6 +438,7 @@ def _bar_chart_by_step_size(
 
 
 def plot_steady_state_error_by_step_size(summary_df: pd.DataFrame, output_dir: Path) -> None:
+    """Plot and save mean steady-state error (deg) grouped by step size."""
     mean_error_by_step = summary_df.groupby("step_size")["steady_state_error_deg"].mean().sort_index()
     _bar_chart_by_step_size(
         mean_error_by_step,
@@ -362,6 +451,7 @@ def plot_steady_state_error_by_step_size(summary_df: pd.DataFrame, output_dir: P
 
 
 def plot_settling_time_by_step_size(summary_df: pd.DataFrame, output_dir: Path) -> None:
+    """Plot and save mean (raw, not asymptotic) settling time (s) grouped by step size."""
     mean_settling_time_by_step = summary_df.groupby("step_size")["settling_time_sec"].mean().sort_index()
     _bar_chart_by_step_size(
         mean_settling_time_by_step,
@@ -374,11 +464,13 @@ def plot_settling_time_by_step_size(summary_df: pd.DataFrame, output_dir: Path) 
 
 
 def plot_overshoot_pct_by_step_size(summary_df: pd.DataFrame, output_dir: Path) -> None:
+    """Plot and save the percentage of tests that overshot by more than
+    OVERSHOOT_THRESHOLD_DEG, grouped by step size."""
     overshoot_pct_by_step = 100 * summary_df.groupby("step_size")["overshoot"].mean().sort_index()
     _bar_chart_by_step_size(
         overshoot_pct_by_step,
-        ylabel="Overshoot (%)",
-        title="Percent Overshoot by Step Size",
+        ylabel=f"Overshoot (%, >{OVERSHOOT_THRESHOLD_DEG:g}° past target)",
+        title=f"Percent Overshoot by Step Size (>{OVERSHOOT_THRESHOLD_DEG:g}° past target)",
         filename="overshoot_pct_by_step_size.png",
         color="tab:green",
         output_dir=output_dir,
@@ -386,12 +478,16 @@ def plot_overshoot_pct_by_step_size(summary_df: pd.DataFrame, output_dir: Path) 
 
 
 def print_step_size_breakdown(summary_df: pd.DataFrame, step_size: float) -> None:
+    """Print descriptive statistics (count/mean/std/min/max/etc.) of settling_time_sec for
+    just the tests at one specific step_size."""
     subset = summary_df[summary_df["step_size"] == step_size]["settling_time_sec"]
     print(f"=== Settling Time Breakdown (step_size={step_size}) ===")
     print(subset.describe())
 
 
 def main() -> None:
+    """Entry point: connect to the Arduino, run the full test matrix, and always close the
+    serial port afterward (even if a test run raises) so the port isn't left locked."""
     ser = connect()
     print(f"Connected to {SERIAL_PORT}")
     try:
