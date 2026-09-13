@@ -59,7 +59,7 @@ understanding of proportional, integral, and derivative control behavior. The go
 - **Kp = 2.0**: Proportional term
 - **Ki = 0.3**: Integral term. The integral gets reset every time a new command is typed in.
 - **Kd = 0.4**: Derivative term
-PID OUTPUT = Kp * error + Ki * integral + Kd * derivative + friction
+- PID OUTPUT = Kp * error + Ki * integral + Kd * derivative + friction
 
 ### Testing Specification
 A test is passed if |current_angle - target| <= TOLERANCE_DEG (currently 3.0°) at that sample, and
