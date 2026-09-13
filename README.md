@@ -18,8 +18,8 @@ H-bridge IN1/IN2 for direction control, ENA for PWM speed control
 Serial output at 9600 baud for real-time data logging
 
 ### File Structure
-**arduino:** contains motor_pid.ino. This is the c++ code that gets uploaded to the arduino via usb. Individual test cases can be run from this file using the arduino IDE and viewing the output in a serial plotter by uncommenting "Alternate testing printing" and commenting out "print outputs to serial"
-**analysis:** contains serial_logging.py, the main file to run all test cases. Test cases are configured in the Test Matrix section, choosing step sizes, directions, startin condition, and number of trials.
+**arduino:** contains motor_pid.ino. This is the c++ code that gets uploaded to the arduino via usb. Individual test cases can be run from this file using the arduino IDE and viewing the output in a serial plotter by uncommenting "Alternate testing printing" and commenting out "print outputs to serial". 
+**analysis:** contains serial_logging.py, the main file to run all test cases. Test cases are configured in the Test Matrix section, choosing step sizes, directions, startin condition, and number of trials.  
 **pid_test_logs:** contains test cases. Each file contains 
 - summary.csv: a summary of every test case run
 - params.txt: text file describing the pid parameters used
